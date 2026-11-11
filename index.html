@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fire Visualizer</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0a0c0f; --panel: #111318; --border: #1e2128;
+      --text: #e8e6e0; --muted: #5a5e6a;
+      --hotspot: #ff4d1c; --agency: #ffb800; --point: #4db8ff;
+      --m3: #e05cff; --active: #3ddc84;
+    }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Space Mono', monospace;
+      height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 22px; border-bottom: 1px solid var(--border);
+      background: var(--panel); z-index: 1000; flex-shrink: 0;
+    }
+    .logo {
+      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 1.05rem;
+      letter-spacing: .04em; display: flex; align-items: center; gap: 10px;
+    }
+    .logo-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--hotspot); box-shadow: 0 0 10px var(--hotspot);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; box-shadow: 0 0 10px var(--hotspot); }
+      50%     { opacity: .5; box-shadow: 0 0 4px var(--hotspot); }
+    }
+    .status-pill {
+      font-size: .65rem; letter-spacing: .1em; color: var(--muted);
+      border: 1px solid var(--border); padding: 4px 10px; text-transform: uppercase;
+    }
+    .status-pill span { color: var(--agency); }
+
+    .main { flex: 1; display: flex; min-height: 0; }
+    /* the map needs a positioned wrapper rather than holding the overlay itself, so
+       Leaflet keeps sole ownership of the children of #map */
+    .map-wrap { flex: 1; position: relative; min-height: 0; }
+    #map { position: absolute; inset: 0; background: #0d0f13; }
+
+    .loading {
+      position: absolute; inset: 0; z-index: 900;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; background: rgba(10, 12, 15, .55);
+      pointer-events: none;   /* the map stays pannable while a day loads */
+    }
+    /* `display: flex` above outranks the browser's own [hidden] { display: none }, which
+       lives in the user-agent stylesheet and loses to any author rule. Without this the
+       overlay is painted from first load and never goes away, whatever the JS sets
+       .hidden to -- and because it is translucent and pointer-events: none, the map still
+       works underneath, so it reads as a load that never finishes. */
+    .loading[hidden] { display: none; }
+    .loading span {
+      font-family: 'Syne', sans-serif; font-size: .7rem; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+    }
+    .spinner {
+      width: 32px; height: 32px; border: 2px solid var(--border);
+      border-top-color: var(--hotspot); border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .side {
+      width: 290px; flex-shrink: 0; background: var(--panel);
+      border-left: 1px solid var(--border); overflow-y: auto; padding: 18px;
+    }
+    .side h2 {
+      font-family: 'Syne', sans-serif; font-size: .68rem; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+      margin: 22px 0 10px;
+    }
+    .side h2:first-child { margin-top: 0; }
+
+    .opt {
+      display: flex; align-items: flex-start; gap: 9px;
+      padding: 6px 0; font-size: .72rem; line-height: 1.45; cursor: pointer;
+    }
+    .opt input { margin-top: 3px; accent-color: var(--hotspot); flex-shrink: 0; }
+    .opt.disabled { color: var(--muted); cursor: not-allowed; }
+    .opt small { display: block; color: var(--muted); font-size: .62rem; line-height: 1.4; }
+    .opt.disabled small { color: #3d414c; }
+
+    .toggle-row { display: flex; gap: 6px; }
+    .toggle {
+      flex: 1; padding: 7px 4px; text-align: center; font-size: .65rem;
+      letter-spacing: .06em; text-transform: uppercase;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; font-family: inherit;
+    }
+    .toggle.active { border-color: var(--hotspot); color: var(--text); }
+
+    .cancel-row { display: flex; justify-content: flex-end; margin-top: 10px; }
+    .cancel {
+      padding: 6px 12px; font-size: .65rem; letter-spacing: .06em; text-transform: uppercase;
+      border: 1px solid var(--hotspot); background: transparent; color: var(--hotspot);
+      cursor: pointer; font-family: inherit;
+    }
+
+    .frame-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .frame-row input { flex: 1; accent-color: var(--hotspot); min-width: 0; }
+
+    .info-row { display: flex; justify-content: space-between; gap: 10px; font-size: .68rem; padding: 3px 0; }
+    .info-row span:first-child { color: var(--muted); }
+    .info-row span:last-child { text-align: right; word-break: break-word; }
+    .note { font-size: .62rem; color: var(--muted); line-height: 1.6; margin-top: 8px; }
+
+    .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: middle; }
+
+    .timeline {
+      flex-shrink: 0; background: var(--panel); border-top: 1px solid var(--border);
+      padding: 12px 22px; display: flex; align-items: center; gap: 16px;
+    }
+    .play {
+      width: 34px; height: 34px; flex-shrink: 0; border: 1px solid var(--border);
+      background: transparent; color: var(--text); cursor: pointer;
+      font-family: inherit; font-size: .8rem;
+    }
+    .play:hover { border-color: var(--hotspot); }
+    .day-label {
+      font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem;
+      letter-spacing: .05em; width: 130px; flex-shrink: 0;
+    }
+    #daySlider { flex: 1; accent-color: var(--hotspot); }
+    .counts { font-size: .65rem; color: var(--muted); width: 150px; text-align: right; flex-shrink: 0; }
+
+    .leaflet-control-zoom { border: 1px solid var(--border) !important; }
+    .leaflet-control-zoom a {
+      background: var(--panel) !important; color: var(--text) !important;
+      border-color: var(--border) !important;
+    }
+    .leaflet-control-attribution { display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><div class="logo-dot"></div>FIRE VISUALIZER</div>
+  <div class="status-pill">STATUS: <span id="statusText">LOADING…</span></div>
+</header>
+
+<div class="main">
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div class="loading" id="loading" hidden>
+      <div class="spinner"></div>
+      <span>Loading fires</span>
+    </div>
+  </div>
+
+  <div class="side">
+    <h2>Fire sources</h2>
+    <label class="opt"><input type="checkbox" id="srcNbac" checked>
+      <span><span class="swatch" style="background:var(--hotspot)"></span>NBAC perimeters
+      <small>Burned-area polygons, 2013–2025</small></span></label>
+    <label class="opt"><input type="checkbox" id="srcNfdb" checked>
+      <span><span class="swatch" style="background:var(--point);border-radius:50%"></span>NFDB points
+      <small>Agency-reported point fires, all sizes, 2013–2025</small></span></label>
+    <label class="opt"><input type="checkbox" id="srcM3" checked>
+      <span><span class="swatch" style="background:var(--m3)"></span>M3 perimeters (live)
+      <small>Clustered satellite hotspots, current season, provisional</small></span></label>
+    <label class="opt"><input type="checkbox" id="srcActive" checked>
+      <span><span class="swatch" style="background:var(--active);border-radius:50%"></span>Active fires (live)
+      <small>Agency-reported fires not yet out, burning up to today</small></span></label>
+    <div class="toggle-row">
+      <button class="toggle" id="refreshBtn">Refresh live data</button>
+    </div>
+    <div class="note" id="liveAsOf">—</div>
+    <div class="note">
+      Solid = hotspot dates (satellite-derived). Amber = agency-reported.
+      Dashed = start date only, shown on that one day because no end date exists.
+    </div>
+
+    <h2>Selected fire</h2>
+    <div id="fireInfo"><div class="note">Click a fire on the map.</div></div>
+  </div>
+</div>
+
+<div class="timeline">
+  <button class="play" id="playBtn">▶</button>
+  <div class="day-label" id="dayLabel">—</div>
+  <input type="range" id="daySlider" min="0" value="0">
+  <div class="counts" id="counts">—</div>
+</div>
+
+<!--
+  Static version of the FastAPI app (no imagery): the browser does what /fires did, loading
+  one JSON file per year and tier from data/ and filtering it by day itself.
+-->
+<script>
+document.addEventListener('DOMContentLoaded', async function () {
+
+  const DAY_ZERO = new Date('2013-01-01T00:00:00Z');
+  const MS_PER_DAY = 86400000;
+
+  // ── Map ─────────────────────────────────────────────────────────────────────
+  const map = L.map('map', {center: [58, -100], zoom: 4, minZoom: 3, maxZoom: 13});
+  // Esri's dark canvas rather than CARTO: CARTO now stamps "API KEY REQUIRED" across
+  // every tile of its free basemap. This one needs no key and is already dark, so it
+  // wants none of the brightness filter the CARTO layer did.
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+              {maxZoom: 16}).addTo(map);
+
+  const fireLayer = L.layerGroup().addTo(map);
+
+  function perimeterStyle(feature) {
+    const src = feature.properties.date_source;
+    if (src === 'hotspot')  return {color: '#ff4d1c', weight: 1, fillOpacity: .35};
+    if (src === 'agency')   return {color: '#ffb800', weight: 1, fillOpacity: .25};
+    return {color: '#ffb800', weight: 1, dashArray: '3,3', fillOpacity: .12};
+  }
+
+  // ── Timeline ────────────────────────────────────────────────────────────────
+  const slider = document.getElementById('daySlider');
+  const today = new Date();
+  slider.max = Math.floor((today - DAY_ZERO) / MS_PER_DAY);
+  slider.value = slider.max;
+
+  function currentDate() {
+    return new Date(DAY_ZERO.getTime() + Number(slider.value) * MS_PER_DAY)
+             .toISOString().slice(0, 10);
+  }
+
+  let fetchTimer = null;
+  let loadingTimer = null;
+  slider.addEventListener('input', () => {
+    document.getElementById('dayLabel').textContent = currentDate();
+    clearTimeout(fetchTimer);
+    fetchTimer = setTimeout(loadFires, 200);
+  });
+
+  let playing = null;
+  document.getElementById('playBtn').addEventListener('click', function () {
+    if (playing) {
+      clearInterval(playing); playing = null; this.textContent = '▶';
+      return;
+    }
+    this.textContent = '❚❚';
+    playing = setInterval(() => {
+      if (Number(slider.value) >= Number(slider.max)) {
+        clearInterval(playing); playing = null;
+        document.getElementById('playBtn').textContent = '▶';
+        return;
+      }
+      slider.value = Number(slider.value) + 1;
+      slider.dispatchEvent(new Event('input'));
+    }, 600);
+  });
+
+  document.getElementById('srcNbac').addEventListener('change', loadFires);
+  document.getElementById('srcNfdb').addEventListener('change', loadFires);
+  document.getElementById('srcM3').addEventListener('change', loadFires);
+  document.getElementById('srcActive').addEventListener('change', loadFires);
+
+  // NBAC and NFDB are published a year or more after the season, so the current season comes
+  // from CWFIS's live products. M3 perimeters are clustered satellite hotspots and hold the
+  // whole season to date; active fires are agency reports of fires not yet out.
+  const M3_URL = 'https://cwfis.cfs.nrcan.gc.ca/geoserver/public/ows?service=WFS&version=2.0.0' +
+                 '&request=GetFeature&outputFormat=application/json&srsName=EPSG:4326' +
+                 '&typeNames=public:m3_polygons_current';
+  const ACTIVE_URL = 'https://api.cwfif.nrcan.gc.ca/reported-fire-stats/fire-list' +
+                     '?paginate=false&active_only=true';
+  let m3 = null;
+  let active = null;
+  let liveAsOf = null;
+
+  async function fetchLive() {
+    const today = new Date().toISOString().slice(0, 10);
+    const m3Json = await (await fetch(M3_URL)).json();
+    m3Json.features.forEach(f => {
+      f.properties.fire_id = f.id;
+      // first to last hotspot detection: the window the satellites actually saw it burning
+      f.properties.date_start = new Date(f.properties.firstdate).toISOString().slice(0, 10);
+      f.properties.date_end = new Date(f.properties.lastdate).toISOString().slice(0, 10);
+      f.properties.date_source = 'live';
+    });
+    const activeJson = await (await fetch(ACTIVE_URL)).json();
+    active = {type: 'FeatureCollection', features: activeJson.map(a => ({
+      type: 'Feature',
+      geometry: {type: 'Point', coordinates: [a.longitude, a.latitude]},
+      properties: {
+        fire_id: a.national_fire_id, agency_code: a.agency_code, fire_size: a.fire_size,
+        stage_of_control: a.stage_of_control, national_fire_cause: a.national_fire_cause,
+        date_start: a.situation_report_date.slice(0, 10),
+        // these fires are by definition not out, so they burn up to the moment of the fetch
+        date_end: today, date_source: 'live',
+      },
+    }))};
+    m3 = m3Json;
+    liveAsOf = new Date();
+  }
+
+  document.getElementById('refreshBtn').addEventListener('click', async function () {
+    this.disabled = true;
+    document.getElementById('liveAsOf').textContent = 'Refreshing…';
+    await fetchLive();
+    this.disabled = false;
+    loadFires();
+  });
+
+  // Below zoom 6 use t2000, below zoom 8 use t500, otherwise t100 -- each tier is simplified
+  // to just under the screen pixel size of the zooms it serves. Same breaks as app.py.
+  const TIER_BREAKS = [6, 8];
+  const TIER_NAMES = ['t2000', 't500', 't100'];
+  const tierFor = zoom => TIER_BREAKS.filter(b => zoom >= b).length;
+
+  // Every NBAC year/tier file is kept once loaded: the finest is ~30 MB, and the files are
+  // only reached by zooming in on one year at a time.
+  const NBAC_YEARS = await (await fetch('data/years.json')).json();
+  const nbacFiles = {};
+  const nfdb = await (await fetch('data/nfdb_2013.json')).json();
+  const EMPTY = {type: 'FeatureCollection', features: []};
+  const onDay = (collection, day) => ({type: 'FeatureCollection',
+    features: collection.features.filter(f => f.properties.date_start <= day && f.properties.date_end >= day)});
+
+  // Same debounce as the slider: scroll-wheel zooming fires zoomend repeatedly on the way
+  // to wherever you stop.
+  let lastTier = tierFor(map.getZoom());
+  map.on('zoomend', () => {
+    if (tierFor(map.getZoom()) === lastTier) return;
+    lastTier = tierFor(map.getZoom());
+    clearTimeout(fetchTimer);
+    fetchTimer = setTimeout(loadFires, 200);
+  });
+
+  // ── Fires for the selected day ──────────────────────────────────────────────
+  async function loadFires() {
+    const sources = [];
+    if (document.getElementById('srcNbac').checked) sources.push('nbac');
+    if (document.getElementById('srcNfdb').checked) sources.push('nfdb');
+    if (document.getElementById('srcM3').checked) sources.push('m3');
+    if (document.getElementById('srcActive').checked) sources.push('active');
+
+    document.getElementById('statusText').textContent = 'LOADING…';
+    // Revealing the overlay on a short delay means it appears for the zoomed-in tiers,
+    // which are megabytes and read off disk, and does not strobe while you scrub or play
+    // at the opening zoom, where every year is already resident and a day is ~300 KB.
+    clearTimeout(loadingTimer);
+    loadingTimer = setTimeout(() => { document.getElementById('loading').hidden = false; }, 200);
+
+    const day = currentDate();
+    const year = Number(day.slice(0, 4));
+    const tier = TIER_NAMES[tierFor(map.getZoom())];
+    // the slider runs to today and NBAC stops earlier, so a year never built has no fires
+    let nbac = EMPTY;
+    if (NBAC_YEARS.includes(year)) {
+      const key = `nbac_${year}_${tier}`;
+      if (!(key in nbacFiles)) nbacFiles[key] = await (await fetch(`data/${key}.json`)).json();
+      nbac = nbacFiles[key];
+    }
+
+    const json = {};
+    for (const [name, layer] of [['nbac', nbac], ['nfdb', nfdb], ['m3', m3], ['active', active]]) {
+      json[name] = sources.includes(name) ? onDay(layer, day) : EMPTY;
+    }
+    json.counts = {nbac: json.nbac.features.length, nfdb: json.nfdb.features.length,
+                   m3: json.m3.features.length, active: json.active.features.length};
+
+    fireLayer.clearLayers();
+
+    L.geoJSON(json.nbac, {
+      style: perimeterStyle,
+      // Fires smaller than the tier's tolerance arrive as a point rather than a polygon --
+      // at 2 km that is four fires in five. Radius tracks area so a 5 ha fire does not end
+      // up drawn larger than the 50,000 ha one beside it, which is what a fixed radius
+      // would do once the polygon it replaces is sub-pixel.
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, Object.assign(
+        {radius: Math.max(2, Math.min(10, Math.sqrt(f.properties.poly_ha || 1) / 8))},
+        perimeterStyle(f))),
+      onEachFeature: (f, l) => l.on('click', () => selectFire('nbac', f.properties)),
+    }).addTo(fireLayer);
+
+    L.geoJSON(json.nfdb, {
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+        radius: Math.max(3, Math.min(14, Math.sqrt(f.properties.SIZE_HA || 1) / 10)),
+        color: '#4db8ff', weight: 1, fillOpacity: .5,
+      }),
+      onEachFeature: (f, l) => l.on('click', () => selectFire('nfdb', f.properties)),
+    }).addTo(fireLayer);
+
+    L.geoJSON(json.m3, {
+      style: {color: '#e05cff', weight: 1, fillOpacity: .3},
+      onEachFeature: (f, l) => l.on('click', () => selectFire('m3', f.properties)),
+    }).addTo(fireLayer);
+
+    L.geoJSON(json.active, {
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+        radius: Math.max(3, Math.min(14, Math.sqrt(f.properties.fire_size || 1) / 10)),
+        color: '#3ddc84', weight: 1, fillOpacity: .5,
+      }),
+      onEachFeature: (f, l) => l.on('click', () => selectFire('active', f.properties)),
+    }).addTo(fireLayer);
+
+    document.getElementById('counts').textContent =
+      `${json.counts.nbac} perimeters / ${json.counts.nfdb} points / ` +
+      `${json.counts.m3} M3 / ${json.counts.active} active`;
+    document.getElementById('liveAsOf').textContent =
+      `Live data as of ${liveAsOf.toLocaleString()}`;
+    document.getElementById('statusText').textContent = 'READY';
+
+    // Only now, after L.geoJSON has built the paths. Hiding it when the fetch resolved
+    // meant the overlay disappeared and the tab then froze for the longest part of the
+    // load, with nothing on screen to say why.
+    clearTimeout(loadingTimer);
+    document.getElementById('loading').hidden = true;
+  }
+
+  // ── Fire selection ──────────────────────────────────────────────────────────
+  function row(k, v) { return `<div class="info-row"><span>${k}</span><span>${v}</span></div>`; }
+
+  function selectFire(source, props) {
+    let html = '';
+    if (source === 'nbac') {
+      html += row('ID', props.fire_id) + row('Area', `${Math.round(props.poly_ha)} ha`) +
+              row('Cause', props.firecaus || '—') + row('Region', props.admin_name || '—');
+    } else if (source === 'm3') {
+      html += row('ID', props.fire_id) + row('Area', `${Math.round(props.area)} ha`) +
+              row('Hotspots', props.hcount);
+    } else if (source === 'active') {
+      html += row('ID', props.fire_id) + row('Area', `${props.fire_size} ha`) +
+              row('Agency', props.agency_code) + row('Status', props.stage_of_control) +
+              row('Cause', props.national_fire_cause);
+    } else {
+      html += row('ID', props.fire_id) + row('Name', props.FIRENAME || '—') +
+              row('Area', `${props.SIZE_HA || 0} ha`) + row('Agency', props.SRC_AGENCY || '—');
+    }
+    html += row('Active', `${props.date_start} → ${props.date_end}`);
+    html += row('Dates from', props.date_source);
+    if (props.date_source === 'start_only') {
+      html += `<div class="note">No end date reported — shown on its start day only.</div>`;
+    }
+    document.getElementById('fireInfo').innerHTML = html;
+  }
+
+  document.getElementById('dayLabel').textContent = currentDate();
+  await fetchLive();
+  loadFires();
+});
+</script>
+</body>
+</html>
